@@ -5,15 +5,15 @@ from lejepa import SIGReg, ViT
 IMG, PATCH, EMBED = 32, 8, 24
 
 
-def make_vit(drop_path_rate: float = 0.0) -> ViT:
+def make_vit(drop_path_rate: float = 0.0, rope_rescale_coords: float = 0.0) -> ViT:
     torch.manual_seed(0)
     return ViT(
-        img_size=IMG,
         patch_size=PATCH,
         embed_dim=EMBED,
         depth=2,
         num_heads=3,
         drop_path_rate=drop_path_rate,
+        rope_rescale_coords=rope_rescale_coords,
     ).eval()
 
 
@@ -24,6 +24,15 @@ def make_images(batch: int = 16, seed: int = 0) -> torch.Tensor:
 
 def test_drop_path_is_stochastic_only_in_training() -> None:
     vit, x = make_vit(drop_path_rate=0.5), make_images()
+    torch.manual_seed(0)
+    assert torch.allclose(vit(x), vit(x))
+    vit.train()
+    torch.manual_seed(0)
+    assert not torch.allclose(vit(x), vit(x))
+
+
+def test_rope_jittering_is_stochastic_only_in_training() -> None:
+    vit, x = make_vit(rope_rescale_coords=2.0), make_images()
     torch.manual_seed(0)
     assert torch.allclose(vit(x), vit(x))
     vit.train()
