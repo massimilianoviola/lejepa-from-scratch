@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lejepa-from-scratch"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["torch"]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["lejepa"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "D209"]
