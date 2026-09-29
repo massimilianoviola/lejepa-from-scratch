@@ -4,16 +4,15 @@ import torch
 import torch.nn.functional as F
 
 
-def drop_path(x: torch.Tensor, drop_prob: float, training: bool) -> torch.Tensor:
-    """Stochastic depth: zero a residual branch for a random subset of samples.
-    Kept samples are scaled by 1 / (1 - drop_prob) to preserve the mean at eval time.
-    """
-    if drop_prob == 0.0 or not training:
-        return x
-    keep = 1.0 - drop_prob
-    # One Bernoulli draw per sample, broadcast over every other axis, divide by keep
-    shape = (x.size(0),) + (1,) * (x.ndim - 1)
-    return x * x.new_empty(shape).bernoulli_(keep).div_(keep)
+class PatchEmbed(torch.nn.Module):
+    """Split the image into patches and embed each one."""
+
+    def __init__(self, patch_size: int, in_chans: int, embed_dim: int) -> None:
+        super().__init__()
+        self.proj = torch.nn.Conv2d(in_chans, embed_dim, patch_size, stride=patch_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x).flatten(2).transpose(1, 2)  # (batch, tokens, embed_dim)
 
 
 def apply_rope(x: torch.Tensor, rope: torch.Tensor) -> torch.Tensor:
@@ -53,30 +52,6 @@ class RotaryEmbedding(torch.nn.Module):
         return torch.cat((angles.sin(), angles.cos()), dim=-1)  # (patches, 2 * dim)
 
 
-class PatchEmbed(torch.nn.Module):
-    """Split the image into patches and embed each one."""
-
-    def __init__(self, patch_size: int, in_chans: int, embed_dim: int) -> None:
-        super().__init__()
-        self.proj = torch.nn.Conv2d(in_chans, embed_dim, patch_size, stride=patch_size)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.proj(x).flatten(2).transpose(1, 2)  # (batch, tokens, embed_dim)
-
-
-class Mlp(torch.nn.Module):
-    """Position-wise feed-forward: widen dimension, apply nonlinearity, project back."""
-
-    def __init__(self, in_features: int, hidden_features: int) -> None:
-        super().__init__()
-        self.fc1 = torch.nn.Linear(in_features, hidden_features)
-        self.act = torch.nn.GELU()
-        self.fc2 = torch.nn.Linear(hidden_features, in_features)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc2(self.act(self.fc1(x)))
-
-
 class Attention(torch.nn.Module):
     """Multi-head self attention over the token axis."""
 
@@ -98,6 +73,42 @@ class Attention(torch.nn.Module):
         return self.proj(attn.transpose(1, 2).reshape(batch, tokens, dim))
 
 
+class Mlp(torch.nn.Module):
+    """Position-wise feed-forward: widen dimension, apply nonlinearity, project back."""
+
+    def __init__(self, in_features: int, hidden_features: int) -> None:
+        super().__init__()
+        self.fc1 = torch.nn.Linear(in_features, hidden_features)
+        self.act = torch.nn.GELU()
+        self.fc2 = torch.nn.Linear(hidden_features, in_features)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(self.act(self.fc1(x)))
+
+
+def drop_path(x: torch.Tensor, drop_prob: float, training: bool) -> torch.Tensor:
+    """Stochastic depth: zero a residual branch for a random subset of samples.
+    Kept samples are scaled by 1 / (1 - drop_prob) to preserve the mean at eval time.
+    """
+    if drop_prob == 0.0 or not training:
+        return x
+    keep = 1.0 - drop_prob
+    # One Bernoulli draw per sample, broadcast over every other axis, divide by keep
+    shape = (x.size(0),) + (1,) * (x.ndim - 1)
+    return x * x.new_empty(shape).bernoulli_(keep).div_(keep)
+
+
+class DropPath(torch.nn.Module):
+    """Stochastic depth layer wrapper around drop_path."""
+
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, self.drop_prob, self.training)
+
+
 class Block(torch.nn.Module):
     """Pre-norm transformer block: attention then MLP, each added as a residual."""
 
@@ -105,16 +116,15 @@ class Block(torch.nn.Module):
         self, dim: int, num_heads: int, mlp_ratio: float = 4.0, drop_path: float = 0.0
     ) -> None:
         super().__init__()
-        self.drop_prob = drop_path
         self.norm1 = torch.nn.LayerNorm(dim)
         self.attn = Attention(dim, num_heads)
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else torch.nn.Identity()
         self.norm2 = torch.nn.LayerNorm(dim)
         self.mlp = Mlp(dim, int(dim * mlp_ratio))
 
     def forward(self, x: torch.Tensor, rope: torch.Tensor) -> torch.Tensor:
-        prob, training = self.drop_prob, self.training
-        x = x + drop_path(self.attn(self.norm1(x), rope), prob, training)
-        return x + drop_path(self.mlp(self.norm2(x)), prob, training)
+        x = x + self.drop_path(self.attn(self.norm1(x), rope))
+        return x + self.drop_path(self.mlp(self.norm2(x)))
 
 
 class ViT(torch.nn.Module):
