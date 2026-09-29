@@ -9,7 +9,13 @@ requires-python = ">=3.12"
 dependencies = ["torch"]
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = [
+    "albumentationsx[headless]>=2.4.11",
+    "datasets>=5.0.1",
+    "pillow>=12.3.0",
+    "pytest",
+    "ruff",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["lejepa"]
