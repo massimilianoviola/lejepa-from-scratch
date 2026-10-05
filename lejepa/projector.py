@@ -9,7 +9,7 @@ class Projector(torch.nn.Sequential):
     def __init__(
         self,
         in_channels: int = 192,
-        dims: Sequence[int] = (64,),
+        dims: Sequence[int] = (512, 64),
         norm: Callable[..., torch.nn.Module] = torch.nn.BatchNorm1d,
         activation: Callable[..., torch.nn.Module] = torch.nn.ReLU,
         dropout: float = 0.0,
