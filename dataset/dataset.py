@@ -43,8 +43,8 @@ class LeJEPADataset(torch.utils.data.Dataset):
         self.local = training_crop(112, (0.05, 0.32), blur=0.5)
         self.test = A.Compose(
             [
-                A.SmallestMaxSize(max_size=256),
-                A.CenterCrop(height=256, width=256),
+                A.SmallestMaxSize(max_size=384),
+                A.CenterCrop(height=384, width=384),
                 A.Normalize(),
                 A.ToTensorV2(),
             ]

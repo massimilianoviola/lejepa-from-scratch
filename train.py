@@ -1,6 +1,4 @@
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 
 import torch
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
@@ -10,6 +8,8 @@ from torch.utils.data import DataLoader
 from dataset import LeJEPADataset
 from lejepa import SIGReg, ViT
 from lejepa.projector import Projector
+from utils.images import save_images
+from utils.run import run_dir, run_name, save_model
 
 
 class Encoder(torch.nn.Module):
@@ -22,14 +22,6 @@ class Encoder(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.projector(self.vit(x))
-
-
-def save_vit(vit: torch.nn.Module, run: str, name: str) -> None:
-    """Write a ViT state dict under checkpoints/<run>/."""
-    path = Path("checkpoints") / run / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(vit.state_dict(), path)
-    print(f"saved {path}")
 
 
 @dataclass
@@ -74,8 +66,17 @@ def main(cfg: Config) -> None:
         else torch.float32
     )
 
-    if cfg.run_name == "auto":
-        cfg.run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    cfg.run_name = run_name(cfg.run_name)
+    log_path = run_dir(cfg.run_name) / "train.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = log_path.open("w")
+    print(f"log {log_path}", flush=True)
+
+    # Fixed validation center crops, logged at 384
+    eval_set = LeJEPADataset("validation", n_global=1, n_local=0)
+    step = len(eval_set) // 8
+    eval_images = torch.stack([eval_set[i * step][0] for i in range(8)])
+    del eval_set
 
     loader = DataLoader(
         LeJEPADataset("train", n_global=cfg.n_global, n_local=cfg.n_local),
@@ -124,7 +125,7 @@ def main(cfg: Config) -> None:
         if epoch == swa_start:
             swa.update_parameters(vit)
         totals = [0.0, 0.0, 0.0]
-        for global_views, local_views in loader:
+        for step, (global_views, local_views) in enumerate(loader, start=1):
             global_views = global_views.to(device, non_blocking=True)
             local_views = local_views.to(device, non_blocking=True)
             optimizer.zero_grad()
@@ -150,22 +151,39 @@ def main(cfg: Config) -> None:
             if epoch >= swa_start:
                 swa.update_parameters(vit)
 
-            for i, value in enumerate((loss, sim, reg)):
-                totals[i] += value.item()
+            values = [loss.item(), sim.item(), reg.item()]
+            for i, value in enumerate(values):
+                totals[i] += value
+            print(
+                f"epoch {epoch} | step {step} | loss {values[0]:.4f}"
+                f" | sim {values[1]:.4f} | sigreg {values[2]:.4f}",
+                file=log,
+                flush=True,
+            )
         steps = len(loader)
-        print(
-            f"epoch {epoch} loss {totals[0] / steps:.4f}"
-            f" sim {totals[1] / steps:.4f} sigreg {totals[2] / steps:.4f}"
+        line = (
+            f"epoch {epoch} | loss {totals[0] / steps:.4f}"
+            f" | sim {totals[1] / steps:.4f} | sigreg {totals[2] / steps:.4f}"
         )
+        print(line, flush=True)
+        print(line, file=log, flush=True)
         done = epoch + 1
-        if done % cfg.save_every == 0 and done != cfg.epochs:
-            # Once SWA has started, the averaged ViT is the one we save
-            if epoch >= swa_start:
-                save_vit(swa.module, cfg.run_name, f"model_epoch_{done:04d}_swa.pth")
-            else:
-                save_vit(vit, cfg.run_name, f"model_epoch_{done:04d}.pth")
+        if done % cfg.save_every == 0:
+            encoder.eval()
+            with torch.inference_mode():
+                # Patch tokens only, CLS is the first token
+                tokens = vit.forward_features(eval_images.to(device, non_blocking=True))
+                tokens = tokens[:, 1:]
+            save_images(eval_images, tokens, cfg.run_name, f"epoch_{done:04d}")
+            if done != cfg.epochs:
+                # Once SWA has started, the averaged model is the one we save
+                if epoch >= swa_start:
+                    save_model(swa.module, cfg.run_name, f"epoch_{done:04d}_swa.pth")
+                else:
+                    save_model(vit, cfg.run_name, f"epoch_{done:04d}.pth")
 
-    save_vit(swa.module, cfg.run_name, f"model_epoch_{cfg.epochs:04d}_final_swa.pth")
+    save_model(swa.module, cfg.run_name, f"epoch_{cfg.epochs:04d}_final_swa.pth")
+    log.close()
 
 
 if __name__ == "__main__":
