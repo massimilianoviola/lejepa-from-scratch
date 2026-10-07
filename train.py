@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 import torch
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
@@ -22,6 +24,14 @@ class Encoder(torch.nn.Module):
         return self.projector(self.vit(x))
 
 
+def save_vit(vit: torch.nn.Module, run: str, name: str) -> None:
+    """Write a ViT state dict under checkpoints/<run>/."""
+    path = Path("checkpoints") / run / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(vit.state_dict(), path)
+    print(f"saved {path}")
+
+
 @dataclass
 class Config:
     # Loss
@@ -30,8 +40,8 @@ class Config:
     # DataLoader
     n_global: int = 2
     n_local: int = 6
-    batch_size: int = 512
-    num_workers: int = 8
+    batch_size: int = 192
+    num_workers: int = 4
 
     # Optimizer
     learning_rate: float = 1e-3
@@ -43,6 +53,10 @@ class Config:
     knots: int = 17
     t_max: float = 5.0
 
+    # Checkpoints
+    run_name: str = "auto"
+    save_every: int = 10
+
 
 def main(cfg: Config) -> None:
     if torch.cuda.is_available():
@@ -51,6 +65,7 @@ def main(cfg: Config) -> None:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+
     # bf16 on CUDA devices that support it, fp32 elsewhere
     dtype = (
         torch.bfloat16
@@ -58,6 +73,9 @@ def main(cfg: Config) -> None:
         and torch.cuda.is_bf16_supported(including_emulation=False)
         else torch.float32
     )
+
+    if cfg.run_name == "auto":
+        cfg.run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     loader = DataLoader(
         LeJEPADataset("train", n_global=cfg.n_global, n_local=cfg.n_local),
@@ -72,6 +90,9 @@ def main(cfg: Config) -> None:
     vit = ViT().to(device)
     projector = Projector().to(device)
     encoder = Encoder(vit, projector)
+    # Split the batch across GPUs
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        encoder = torch.nn.DataParallel(encoder)
     # Stochastic weight average of the ViT kept as final model
     swa = AveragedModel(vit)
     sigreg = SIGReg(knots=cfg.knots, t_max=cfg.t_max, num_slices=cfg.num_slices).to(
@@ -136,6 +157,15 @@ def main(cfg: Config) -> None:
             f"epoch {epoch} loss {totals[0] / steps:.4f}"
             f" sim {totals[1] / steps:.4f} sigreg {totals[2] / steps:.4f}"
         )
+        done = epoch + 1
+        if done % cfg.save_every == 0 and done != cfg.epochs:
+            # Once SWA has started, the averaged ViT is the one we save
+            if epoch >= swa_start:
+                save_vit(swa.module, cfg.run_name, f"model_epoch_{done:04d}_swa.pth")
+            else:
+                save_vit(vit, cfg.run_name, f"model_epoch_{done:04d}.pth")
+
+    save_vit(swa.module, cfg.run_name, f"model_epoch_{cfg.epochs:04d}_final_swa.pth")
 
 
 if __name__ == "__main__":
