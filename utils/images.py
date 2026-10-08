@@ -13,12 +13,12 @@ def denorm(view: torch.Tensor) -> Image.Image:
     return Image.fromarray((image.permute(1, 2, 0) * 255).byte().numpy())
 
 
-def save_views(images: torch.Tensor, run: str, name: str) -> None:
+def save_views(images: torch.Tensor, run: str) -> None:
     """Write each image under run/<run>/images/."""
     folder = run_dir(run) / "images"
     folder.mkdir(parents=True, exist_ok=True)
     for i, view in enumerate(images, start=1):
-        path = folder / f"image_{i:02d}_{name}.jpg"
+        path = folder / f"image_{i:02d}.jpg"
         denorm(view).save(path)
 
 
@@ -46,11 +46,3 @@ def save_pca(embeddings: torch.Tensor, run: str, name: str) -> None:
         Image.fromarray(rgb.numpy()).resize(
             (side, side), Image.Resampling.BILINEAR
         ).save(path)
-
-
-def save_images(
-    images: torch.Tensor, embeddings: torch.Tensor, run: str, name: str
-) -> None:
-    """Write each eval image and a PCA of its patch tokens under run/<run>/images/."""
-    save_views(images, run, name)
-    save_pca(embeddings, run, name)

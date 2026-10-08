@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from dataset import LeJEPADataset
 from lejepa import SIGReg, ViT
 from lejepa.projector import Projector
-from utils.images import save_images
+from utils.images import save_pca, save_views
 from utils.run import run_dir, run_name, save_model
 
 
@@ -77,6 +77,7 @@ def main(cfg: Config) -> None:
     step = len(eval_set) // 8
     eval_images = torch.stack([eval_set[i * step][0] for i in range(8)])
     del eval_set
+    save_views(eval_images, cfg.run_name)
 
     loader = DataLoader(
         LeJEPADataset("train", n_global=cfg.n_global, n_local=cfg.n_local),
@@ -133,12 +134,16 @@ def main(cfg: Config) -> None:
                 device.type, dtype=dtype, enabled=dtype == torch.bfloat16
             ):
                 bs = global_views.shape[0]
-                # (batch, views, C, H, W) -> (views * batch, C, H, W)
-                g_flat = global_views.transpose(0, 1).flatten(0, 1)
-                l_flat = local_views.transpose(0, 1).flatten(0, 1)
-                # (views * batch, dim) -> (views, batch, dim)
-                global_embedding = encoder(g_flat).view(cfg.n_global, bs, -1)
-                local_embedding = encoder(l_flat).view(cfg.n_local, bs, -1)
+                # (batch, views, C, H, W) -> (batch * views, C, H, W)
+                g_flat = global_views.flatten(0, 1)
+                l_flat = local_views.flatten(0, 1)
+                # (batch * views, dim) -> model -> (views, batch, dim)
+                global_embedding = (
+                    encoder(g_flat).view(bs, cfg.n_global, -1).transpose(0, 1)
+                )
+                local_embedding = (
+                    encoder(l_flat).view(bs, cfg.n_local, -1).transpose(0, 1)
+                )
                 all_embedding = torch.cat([global_embedding, local_embedding], dim=0)
                 centers = global_embedding.mean(0)
                 sim = (centers - all_embedding).square().mean()
@@ -174,7 +179,7 @@ def main(cfg: Config) -> None:
                 # Patch tokens only, CLS is the first token
                 tokens = vit.forward_features(eval_images.to(device, non_blocking=True))
                 tokens = tokens[:, 1:]
-            save_images(eval_images, tokens, cfg.run_name, f"epoch_{done:04d}")
+            save_pca(tokens, cfg.run_name, f"epoch_{done:04d}")
             if done != cfg.epochs:
                 # Once SWA has started, the averaged model is the one we save
                 if epoch >= swa_start:
