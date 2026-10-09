@@ -32,7 +32,7 @@ class Config:
     # DataLoader
     n_global: int = 2
     n_local: int = 6
-    batch_size: int = 192
+    batch_size: int = 256
     num_workers: int = 4
 
     # Optimizer
@@ -58,13 +58,15 @@ def main(cfg: Config) -> None:
     else:
         device = torch.device("cpu")
 
-    # bf16 on CUDA devices that support it, fp32 elsewhere
-    dtype = (
-        torch.bfloat16
-        if device.type == "cuda"
-        and torch.cuda.is_bf16_supported(including_emulation=False)
-        else torch.float32
-    )
+    # bf16 on supported CUDA GPUs, fp16 on older CUDA GPUs, fp32 elsewhere
+    if device.type == "cuda":
+        if torch.cuda.is_bf16_supported(including_emulation=False):
+            dtype = torch.bfloat16
+        else:
+            dtype = torch.float16
+    else:
+        dtype = torch.float32
+    scaler = torch.amp.GradScaler("cuda", enabled=dtype == torch.float16)
 
     cfg.run_name = run_name(cfg.run_name)
     log_path = run_dir(cfg.run_name) / "train.log"
@@ -131,7 +133,7 @@ def main(cfg: Config) -> None:
             local_views = local_views.to(device, non_blocking=True)
             optimizer.zero_grad()
             with torch.autocast(
-                device.type, dtype=dtype, enabled=dtype == torch.bfloat16
+                device.type, dtype=dtype, enabled=dtype != torch.float32
             ):
                 bs = global_views.shape[0]
                 # (batch, views, C, H, W) -> (batch * views, C, H, W)
@@ -149,9 +151,13 @@ def main(cfg: Config) -> None:
                 sim = (centers - all_embedding).square().mean()
                 reg = sigreg(all_embedding)
                 loss = (1 - cfg.lambd) * sim + cfg.lambd * reg
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+            scaler.scale(loss).backward()
+            scale_before = scaler.get_scale()
+            scaler.step(optimizer)
+            scaler.update()
+            scale_after = scaler.get_scale()
+            if scale_after >= scale_before:
+                scheduler.step()
 
             if epoch >= swa_start:
                 swa.update_parameters(vit)
