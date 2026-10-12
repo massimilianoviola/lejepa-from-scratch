@@ -9,9 +9,10 @@ HF_REPO = "mviola/nuImages-cam-front"
 def training_crop(
     size: int, scale: tuple[float, float], blur: float, solarize: bool = False
 ) -> A.Compose:
-    """DINOv3 augmentation recipe: crop, color, blur, normalize."""
+    """DINOv3 augmentation recipe: crop, color, blur, normalize, plus flip."""
     steps = [
         A.RandomResizedCrop(size=(size, size), scale=scale),
+        A.HorizontalFlip(p=0.5),
         A.ColorJitter(
             brightness_range=(0.6, 1.4),
             contrast_range=(0.6, 1.4),

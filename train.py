@@ -37,8 +37,8 @@ class Config:
 
     # Optimizer
     learning_rate: float = 1e-3
-    weight_decay: float = 1e-2
-    epochs: int = 200
+    weight_decay: float = 5e-2
+    epochs: int = 300
 
     # SIGReg
     num_slices: int = 1024
@@ -117,7 +117,7 @@ def main(cfg: Config) -> None:
     swa_steps = swa_start * len(loader)
     s2 = SWALR(
         optimizer,
-        swa_lr=cfg.learning_rate / 50,
+        swa_lr=cfg.learning_rate / 10,
         anneal_epochs=swa_steps - warmup_steps,
         anneal_strategy="cos",
     )
