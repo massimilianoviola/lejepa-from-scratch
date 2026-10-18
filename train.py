@@ -111,7 +111,8 @@ def main(cfg: Config) -> None:
     projector = Projector().to(device)
     encoder = Encoder(vit, projector)
     if world_size > 1:
-        encoder = DDP(encoder)
+        encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(encoder)
+        encoder = DDP(encoder, broadcast_buffers=False)
     # Stochastic weight average of the ViT kept as final model
     swa = AveragedModel(vit)
     sigreg = SIGReg(knots=cfg.knots, t_max=cfg.t_max, num_slices=cfg.num_slices).to(
