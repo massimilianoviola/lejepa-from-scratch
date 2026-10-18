@@ -1,9 +1,12 @@
+import os
 from dataclasses import dataclass
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from torch.optim.swa_utils import SWALR, AveragedModel
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 
 from dataset import LeJEPADataset
 from lejepa import SIGReg, ViT
@@ -51,6 +54,14 @@ class Config:
 
 
 def main(cfg: Config) -> None:
+    # Set by torchrun, plain `python train.py` falls back to a single device
+    rank = int(os.environ.get("RANK", 0))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if world_size > 1:
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group("nccl")
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -69,22 +80,27 @@ def main(cfg: Config) -> None:
     scaler = torch.amp.GradScaler("cuda", enabled=dtype == torch.float16)
 
     cfg.run_name = run_name(cfg.run_name)
-    log_path = run_dir(cfg.run_name) / "train.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log = log_path.open("w")
-    print(f"log {log_path}", flush=True)
+    if rank == 0:
+        # Only rank 0 logs and saves
+        log_path = run_dir(cfg.run_name) / "train.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log = log_path.open("w")
+        print(f"log {log_path}", flush=True)
 
-    # Fixed validation center crops, logged at 384
-    eval_set = LeJEPADataset("validation", n_global=1, n_local=0)
-    step = len(eval_set) // 8
-    eval_images = torch.stack([eval_set[i * step][0] for i in range(8)])
-    del eval_set
-    save_views(eval_images, cfg.run_name)
+        # Fixed validation center crops, logged at 384
+        eval_set = LeJEPADataset("validation", n_global=1, n_local=0)
+        step = len(eval_set) // 8
+        eval_images = torch.stack([eval_set[i * step][0] for i in range(8)])
+        del eval_set
+        save_views(eval_images, cfg.run_name)
 
+    train_set = LeJEPADataset("train", n_global=cfg.n_global, n_local=cfg.n_local)
+    sampler = DistributedSampler(train_set, drop_last=True) if world_size > 1 else None
     loader = DataLoader(
-        LeJEPADataset("train", n_global=cfg.n_global, n_local=cfg.n_local),
-        batch_size=cfg.batch_size,
-        shuffle=True,
+        train_set,
+        batch_size=cfg.batch_size // world_size,  # batch_size is the global batch
+        shuffle=sampler is None,
+        sampler=sampler,
         drop_last=True,
         num_workers=cfg.num_workers,
         pin_memory=True,
@@ -94,9 +110,8 @@ def main(cfg: Config) -> None:
     vit = ViT().to(device)
     projector = Projector().to(device)
     encoder = Encoder(vit, projector)
-    # Split the batch across GPUs
-    if device.type == "cuda" and torch.cuda.device_count() > 1:
-        encoder = torch.nn.DataParallel(encoder)
+    if world_size > 1:
+        encoder = DDP(encoder)
     # Stochastic weight average of the ViT kept as final model
     swa = AveragedModel(vit)
     sigreg = SIGReg(knots=cfg.knots, t_max=cfg.t_max, num_slices=cfg.num_slices).to(
@@ -124,6 +139,8 @@ def main(cfg: Config) -> None:
     scheduler = SequentialLR(optimizer, schedulers=[s1, s2], milestones=[warmup_steps])
 
     for epoch in range(cfg.epochs):
+        if world_size > 1:
+            sampler.set_epoch(epoch)
         encoder.train()
         if epoch == swa_start:
             swa.update_parameters(vit)
@@ -162,6 +179,8 @@ def main(cfg: Config) -> None:
             if epoch >= swa_start:
                 swa.update_parameters(vit)
 
+            if rank != 0:
+                continue
             values = [loss.item(), sim.item(), reg.item()]
             for i, value in enumerate(values):
                 totals[i] += value
@@ -171,6 +190,8 @@ def main(cfg: Config) -> None:
                 file=log,
                 flush=True,
             )
+        if rank != 0:
+            continue
         steps = len(loader)
         line = (
             f"epoch {epoch} | loss {totals[0] / steps:.4f}"
@@ -193,8 +214,11 @@ def main(cfg: Config) -> None:
                 else:
                     save_model(vit, cfg.run_name, f"epoch_{done:04d}.pth")
 
-    save_model(swa.module, cfg.run_name, f"epoch_{cfg.epochs:04d}_final_swa.pth")
-    log.close()
+    if rank == 0:
+        save_model(swa.module, cfg.run_name, f"epoch_{cfg.epochs:04d}_final_swa.pth")
+        log.close()
+    if world_size > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

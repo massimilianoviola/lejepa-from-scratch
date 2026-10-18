@@ -1,4 +1,6 @@
 import torch
+import torch.distributed as dist
+from torch.distributed.nn import all_reduce
 
 
 class SIGReg(torch.nn.Module):
@@ -30,13 +32,23 @@ class SIGReg(torch.nn.Module):
         self.register_buffer("t", t)
         self.register_buffer("phi", phi)
         self.register_buffer("weights", weights * phi)
+        self.step = 0  # Seeds the slices so every GPU draws the same ones
 
     def forward(self, proj: torch.Tensor) -> torch.Tensor:
         assert proj.ndim == 3, f"expected (views, batch, dims), got {tuple(proj.shape)}"
-        A = torch.randn(proj.size(-1), self.num_slices, device=proj.device)
+        g = torch.Generator(proj.device).manual_seed(self.step)
+        self.step += 1
+        A = torch.randn(proj.size(-1), self.num_slices, device=proj.device, generator=g)
         A = A.div_(A.norm(p=2, dim=0))  # Unit norm so slices of N(0, I) are N(0, 1)
         x_t = (proj @ A).unsqueeze(-1) * self.t  # (views, batch, slices, knots)
+        cos, sin = x_t.cos().mean(-3), x_t.sin().mean(-3)
+        n = proj.size(-2)
+        # Average the ECF over GPUs so the test sees the global batch
+        if dist.is_initialized():
+            world = dist.get_world_size()
+            cos, sin = all_reduce(cos) / world, all_reduce(sin) / world
+            n *= world
         # Squared modulus of ecf(t) - phi(t), split into real and imaginary parts
-        err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
-        statistic = (err @ self.weights) * proj.size(-2)
+        err = (cos - self.phi).square() + sin.square()
+        statistic = (err @ self.weights) * n
         return statistic.mean()
