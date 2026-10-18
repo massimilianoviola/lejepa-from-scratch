@@ -39,9 +39,9 @@ class Config:
     num_workers: int = 4
 
     # Optimizer
-    learning_rate: float = 1e-3
+    learning_rate: float = 2e-3
     weight_decay: float = 5e-2
-    epochs: int = 300
+    epochs: int = 350
 
     # SIGReg
     num_slices: int = 1024
