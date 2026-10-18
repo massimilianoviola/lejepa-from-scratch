@@ -1,16 +1,19 @@
+import cv2
 import numpy as np
 import torch
-from PIL import Image
 
 from dataset import LeJEPADataset
 
 
 def test_loader_returns_a_batch(monkeypatch) -> None:
-    image = Image.fromarray(np.zeros((900, 1600, 3), dtype=np.uint8))
+    _, jpeg = cv2.imencode(".jpg", np.zeros((900, 1600, 3), dtype=np.uint8))
 
     class _Split:
+        def cast_column(self, *args, **kwargs) -> "_Split":
+            return self
+
         def __getitem__(self, i: int) -> dict:
-            return {"image": image}
+            return {"image": {"bytes": jpeg.tobytes()}}
 
         def __len__(self) -> int:
             return 4
