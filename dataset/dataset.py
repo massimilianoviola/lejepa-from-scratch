@@ -1,7 +1,8 @@
 import albumentations as A
+import cv2
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import Image, load_dataset
 
 HF_REPO = "mviola/nuImages-cam-front"
 
@@ -36,7 +37,10 @@ class LeJEPADataset(torch.utils.data.Dataset):
         assert n_global >= 1, "n_global must be at least 1"
         self.n_global = n_global
         self.n_local = n_local
-        self.ds = load_dataset(HF_REPO, split=split)
+        # Raw JPEG bytes, decoded by OpenCV in __getitem__
+        self.ds = load_dataset(HF_REPO, split=split).cast_column(
+            "image", Image(decode=False)
+        )
         # Like DINOv3, first global always blurred, second rarely and solarized
         self.global1 = training_crop(256, (0.32, 1.0), blur=1.0)
         self.global2 = training_crop(256, (0.32, 1.0), blur=0.1, solarize=True)
@@ -52,7 +56,10 @@ class LeJEPADataset(torch.utils.data.Dataset):
         )
 
     def __getitem__(self, i: int) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        img = np.asarray(self.ds[i]["image"].convert("RGB"))
+        buffer = np.frombuffer(self.ds[i]["image"]["bytes"], np.uint8)
+        # Decode at half resolution, crops are smaller anyway
+        img = cv2.imdecode(buffer, cv2.IMREAD_REDUCED_COLOR_2)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         if self.n_local == 0:
             views = [self.test(image=img)["image"] for _ in range(self.n_global)]
             return torch.stack(views)
