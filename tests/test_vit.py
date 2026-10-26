@@ -5,7 +5,11 @@ from lejepa import SIGReg, ViT
 IMG, PATCH, EMBED = 32, 8, 24
 
 
-def make_vit(drop_path_rate: float = 0.0, rope_rescale_coords: float = 0.0) -> ViT:
+def make_vit(
+    drop_path_rate: float = 0.0,
+    rope_rescale_coords: float = 0.0,
+    patch_drop: float = 0.0,
+) -> ViT:
     torch.manual_seed(0)
     return ViT(
         patch_size=PATCH,
@@ -14,6 +18,7 @@ def make_vit(drop_path_rate: float = 0.0, rope_rescale_coords: float = 0.0) -> V
         num_heads=3,
         drop_path_rate=drop_path_rate,
         rope_rescale_coords=rope_rescale_coords,
+        patch_drop=patch_drop,
     ).eval()
 
 
@@ -37,6 +42,16 @@ def test_rope_jittering_is_stochastic_only_in_training() -> None:
     assert torch.allclose(vit(x), vit(x))
     vit.train()
     torch.manual_seed(0)
+    assert not torch.allclose(vit(x), vit(x))
+
+
+def test_patch_drop_keeps_a_random_subset_only_in_training() -> None:
+    vit, x = make_vit(patch_drop=0.3), make_images()
+    patches = (IMG // PATCH) ** 2
+    assert vit.forward_features(x).shape[1] == 1 + patches
+    vit.train()
+    keep = patches - int(patches * 0.3)
+    assert vit.forward_features(x).shape[1] == 1 + keep
     assert not torch.allclose(vit(x), vit(x))
 
 

@@ -141,8 +141,10 @@ class ViT(torch.nn.Module):
         num_heads: int = 3,
         drop_path_rate: float = 0.1,
         rope_rescale_coords: float = 2.0,
+        patch_drop: float = 0.3,
     ) -> None:
         super().__init__()
+        self.patch_drop = patch_drop
         self.patch_embed = PatchEmbed(patch_size, in_chans, embed_dim)
         self.rope = RotaryEmbedding(
             embed_dim // num_heads, rescale_coords=rope_rescale_coords
@@ -161,6 +163,13 @@ class ViT(torch.nn.Module):
         stride_h, stride_w = self.patch_embed.proj.stride
         rope = self.rope((x.shape[-2] // stride_h, x.shape[-1] // stride_w))
         x = self.patch_embed(x)
+        if self.training and self.patch_drop > 0.0:
+            # Keep a random subset of patches per image, with their RoPE angles
+            batch, patches, dim = x.shape
+            keep = patches - int(patches * self.patch_drop)
+            idx = torch.rand(batch, patches, device=x.device).argsort(1)[:, :keep]
+            x = x.gather(1, idx.unsqueeze(-1).expand(-1, -1, dim))
+            rope = rope[idx].unsqueeze(1)  # (batch, 1, keep, 2 * head_dim)
         cls = self.cls_token.expand(x.size(0), -1, -1)
         x = torch.cat([cls, x], dim=1)
         for block in self.blocks:
