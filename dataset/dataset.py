@@ -31,10 +31,11 @@ def training_crop(
 
 
 class LeJEPADataset(torch.utils.data.Dataset):
-    """Return local and global crops, augmented."""
+    """Return augmented global and local crops, or a center crop outside train."""
 
     def __init__(self, split: str, n_global: int = 2, n_local: int = 6) -> None:
         assert n_global >= 1, "n_global must be at least 1"
+        self.train = split == "train"
         self.n_global = n_global
         self.n_local = n_local
         # Raw JPEG bytes, decoded by OpenCV in __getitem__
@@ -60,16 +61,14 @@ class LeJEPADataset(torch.utils.data.Dataset):
         # Decode at half resolution, crops are smaller anyway
         img = cv2.imdecode(buffer, cv2.IMREAD_REDUCED_COLOR_2)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        if self.n_local == 0:
-            views = [self.test(image=img)["image"] for _ in range(self.n_global)]
-            return torch.stack(views)
+        if not self.train:
+            return self.test(image=img)["image"]
         globals_transform = (self.global1, self.global2)
         global_views = torch.stack(
             [globals_transform[v % 2](image=img)["image"] for v in range(self.n_global)]
         )
-        local_views = torch.stack(
-            [self.local(image=img)["image"] for _ in range(self.n_local)]
-        )
+        local_views = [self.local(image=img)["image"] for _ in range(self.n_local)]
+        local_views = torch.stack(local_views) if local_views else torch.empty(0)
         return global_views, local_views
 
     def __len__(self) -> int:
