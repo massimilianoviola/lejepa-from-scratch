@@ -33,13 +33,13 @@ class Config:
     lambd: float = 0.05
 
     # DataLoader
-    n_global: int = 2
-    n_local: int = 6
-    batch_size: int = 256
+    n_global: int = 4
+    n_local: int = 0
+    batch_size: int = 384
     num_workers: int = 4
 
     # Optimizer
-    learning_rate: float = 2e-3
+    learning_rate: float = 3e-3
     weight_decay: float = 5e-2
     epochs: int = 350
 
