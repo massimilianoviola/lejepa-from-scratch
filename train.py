@@ -33,13 +33,13 @@ class Config:
     lambd: float = 0.05
 
     # DataLoader
-    n_global: int = 2
-    n_local: int = 6
-    batch_size: int = 256
+    n_global: int = 4
+    n_local: int = 0
+    batch_size: int = 384
     num_workers: int = 4
 
     # Optimizer
-    learning_rate: float = 2e-3
+    learning_rate: float = 3e-3
     weight_decay: float = 5e-2
     epochs: int = 350
 
@@ -88,9 +88,9 @@ def main(cfg: Config) -> None:
         print(f"log {log_path}", flush=True)
 
         # Fixed validation center crops, logged at 384
-        eval_set = LeJEPADataset("validation", n_global=1, n_local=0)
+        eval_set = LeJEPADataset("validation")
         step = len(eval_set) // 8
-        eval_images = torch.stack([eval_set[i * step][0] for i in range(8)])
+        eval_images = torch.stack([eval_set[i * step] for i in range(8)])
         del eval_set
         save_views(eval_images, cfg.run_name)
 
@@ -156,15 +156,18 @@ def main(cfg: Config) -> None:
                 bs = global_views.shape[0]
                 # (batch, views, C, H, W) -> (batch * views, C, H, W)
                 g_flat = global_views.flatten(0, 1)
-                l_flat = local_views.flatten(0, 1)
                 # (batch * views, dim) -> model -> (views, batch, dim)
                 global_embedding = (
                     encoder(g_flat).view(bs, cfg.n_global, -1).transpose(0, 1)
                 )
-                local_embedding = (
-                    encoder(l_flat).view(bs, cfg.n_local, -1).transpose(0, 1)
-                )
-                all_embedding = torch.cat([global_embedding, local_embedding], dim=0)
+                embeddings = [global_embedding]
+                if cfg.n_local > 0:
+                    l_flat = local_views.flatten(0, 1)
+                    local_embedding = (
+                        encoder(l_flat).view(bs, cfg.n_local, -1).transpose(0, 1)
+                    )
+                    embeddings.append(local_embedding)
+                all_embedding = torch.cat(embeddings)
                 centers = global_embedding.mean(0)
                 sim = (centers - all_embedding).square().mean()
                 reg = sigreg(all_embedding)
