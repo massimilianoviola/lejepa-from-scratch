@@ -219,3 +219,6 @@ __marimo__/
 
 # Training runs
 run/
+
+# macOS
+.DS_Store
